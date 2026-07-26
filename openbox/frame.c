@@ -75,8 +75,7 @@ static Visual *check_32bit_client(ObClient *c)
         return NULL;
 
     ret = XGetWindowAttributes(obt_display, c->window, &wattrib);
-    g_assert(ret != BadDrawable);
-    g_assert(ret != BadWindow);
+    if (!ret || c->window == None) return NULL;
 
     if (wattrib.depth == 32)
         return wattrib.visual;

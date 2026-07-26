@@ -380,7 +380,10 @@ static void* convert_text_property(XTextProperty *tprop,
         p = (gchar*)tprop->value;
         n_strs = 0;
         while (p < (gchar*)tprop->value + tprop->nitems) {
-            p += strlen(p) + 1; /* next string */
+            gsize remain = (gchar*)tprop->value + tprop->nitems - p;
+            gsize slen = strnlen(p, remain);
+            if (slen == remain) break; /* not null-terminated */
+            p += slen + 1;
             ++n_strs;
         }
 
@@ -392,7 +395,9 @@ static void* convert_text_property(XTextProperty *tprop,
             p = (gchar*)tprop->value;
             for (i = 0; i < n_strs; ++i) {
                 retlist[i] = p;
-                p += strlen(p) + 1; /* next string */
+                gsize remain = (gchar*)tprop->value + tprop->nitems - p;
+                gsize slen = strnlen(p, remain);
+                p += slen + 1;
             }
         }
     }

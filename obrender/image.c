@@ -21,6 +21,7 @@
 #include "image.h"
 #include "color.h"
 #include "imagecache.h"
+#include "../openbox/debug.h"
 #ifdef USE_IMLIB2
 #include <Imlib2.h>
 #endif
@@ -713,10 +714,10 @@ static RrImagePic* ResizeImage(RrPixel32 *src,
     gulong ratioX, ratioY;
     gulong aspectW, aspectH;
 
-    g_assert(srcW > 0);
-    g_assert(srcH > 0);
-    g_assert(dstW > 0);
-    g_assert(dstH > 0);
+    if (srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) {
+        ob_debug("invalid image dimensions: src=%dx%d, dst=%dx%d", srcW, srcH, dstW, dstH);
+        return NULL;
+    }
 
     /* keep the aspect ratio */
     aspectW = dstW;

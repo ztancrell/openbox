@@ -1280,7 +1280,7 @@ static void client_get_area(ObClient *self)
     Status ret;
 
     ret = XGetWindowAttributes(obt_display, self->window, &wattrib);
-    g_assert(ret != BadWindow);
+    if (!ret || self->window == None) return;
 
     RECT_SET(self->area, wattrib.x, wattrib.y, wattrib.width, wattrib.height);
     POINT_SET(self->root_pos, wattrib.x, wattrib.y);
@@ -2156,21 +2156,24 @@ void client_update_title(ObClient *self)
 
     /* try netwm */
     if (!OBT_PROP_GETS_UTF8(self->window, NET_WM_NAME, &data)) {
-        /* try old x stuff */
-        if (!OBT_PROP_GETS(self->window, WM_NAME, &data)) {
-            if (self->transient) {
-   /*
-   GNOME alert windows are not given titles:
-   http://developer.gnome.org/projects/gup/hig/draft_hig_new/windows-alert.html
-   */
-                data = g_strdup("");
-            } else {
-                if (self->class && *self->class)
-                    data = g_strdup(self->class);
-                else if (self->name && *self->name)
-                    data = g_strdup(self->name);
-                else
-                    data = g_strdup(_("Unnamed Window"));
+        /* try _NET_WM_NAME with any encoding (some apps use STRING) */
+        if (!OBT_PROP_GETS(self->window, NET_WM_NAME, &data)) {
+            /* try old x stuff */
+            if (!OBT_PROP_GETS(self->window, WM_NAME, &data)) {
+                if (self->transient) {
+    /*
+    GNOME alert windows are not given titles:
+    http://developer.gnome.org/projects/gup/hig/draft_hig_new/windows-alert.html
+    */
+                    data = g_strdup("");
+                } else {
+                    if (self->class && *self->class)
+                        data = g_strdup(self->class);
+                    else if (self->name && *self->name)
+                        data = g_strdup(self->name);
+                    else
+                        data = g_strdup(_("Unnamed Window"));
+                }
             }
         }
     }
@@ -2206,9 +2209,11 @@ void client_update_title(ObClient *self)
 
     /* try netwm */
     if (!OBT_PROP_GETS_UTF8(self->window, NET_WM_ICON_NAME, &data))
-        /* try old x stuff */
-        if (!OBT_PROP_GETS(self->window, WM_ICON_NAME, &data))
-            data = g_strdup(self->title);
+        /* try _NET_WM_ICON_NAME with any encoding */
+        if (!OBT_PROP_GETS(self->window, NET_WM_ICON_NAME, &data))
+            /* try old x stuff */
+            if (!OBT_PROP_GETS(self->window, WM_ICON_NAME, &data))
+                data = g_strdup(self->title);
 
     if (self->client_machine) {
         visible = g_strdup_printf("%s (%s)", data, self->client_machine);
@@ -3232,8 +3237,10 @@ void client_try_configure(ObClient *self, gint *x, gint *y, gint *w, gint *h,
         }
     }
 
-    g_assert(*w > 0);
-    g_assert(*h > 0);
+    if (*w <= 0 || *h <= 0) {
+        ob_debug("invalid calculated size: %dx%d", *w, *h);
+        return;
+    }
 }
 
 void client_configure(ObClient *self, gint x, gint y, gint w, gint h,
@@ -3424,8 +3431,12 @@ void client_fullscreen(ObClient *self, gboolean fs)
         w = self->area.width;
         h = self->area.height;
     } else {
-        g_assert(self->pre_fullscreen_area.width > 0 &&
-                 self->pre_fullscreen_area.height > 0);
+        if (self->pre_fullscreen_area.width <= 0 ||
+            self->pre_fullscreen_area.height <= 0) {
+            ob_debug("invalid pre_fullscreen_area: %dx%d", 
+                     self->pre_fullscreen_area.width, self->pre_fullscreen_area.height);
+            return;
+        }
 
         self->max_horz = self->pre_fullscreen_max_horz;
         self->max_vert = self->pre_fullscreen_max_vert;
@@ -3571,7 +3582,10 @@ void client_maximize(ObClient *self, gboolean max, gint dir)
         }
     } else {
         if ((dir == 0 || dir == 1) && self->max_horz) { /* horz */
-            g_assert(self->pre_max_area.width > 0);
+            if (self->pre_max_area.width <= 0) {
+                ob_debug("invalid pre_max_area width: %d", self->pre_max_area.width);
+                return;
+            }
 
             x = self->pre_max_area.x;
             w = self->pre_max_area.width;
@@ -3580,7 +3594,10 @@ void client_maximize(ObClient *self, gboolean max, gint dir)
                      0, self->pre_max_area.height);
         }
         if ((dir == 0 || dir == 2) && self->max_vert) { /* vert */
-            g_assert(self->pre_max_area.height > 0);
+            if (self->pre_max_area.height <= 0) {
+                ob_debug("invalid pre_max_area height: %d", self->pre_max_area.height);
+                return;
+            }
 
             y = self->pre_max_area.y;
             h = self->pre_max_area.height;

@@ -543,7 +543,7 @@ static gboolean session_save_to_file(const ObSMSaveData *savedata)
             preh = c->area.height;
             if (c->fullscreen) {
                 prex = c->pre_fullscreen_area.x;
-                prey = c->pre_fullscreen_area.x;
+                prey = c->pre_fullscreen_area.y;
                 prew = c->pre_fullscreen_area.width;
                 preh = c->pre_fullscreen_area.height;
             }
@@ -682,17 +682,36 @@ GList* session_state_find(ObClient *c)
     return it;
 }
 
+static GHashTable *session_state_hash = NULL;
+
+static gboolean session_state_key_equal(gconstpointer v1, gconstpointer v2)
+{
+    return strcmp(v1, v2) == 0;
+}
+
+static guint session_state_key_hash(gconstpointer v)
+{
+    return g_str_hash(v);
+}
+
 static void session_load_file(const gchar *path)
 {
     ObtXmlInst *i;
     xmlNodePtr node, n, m;
-    GList *it, *inext;
+    GList *it;
+
+    /* Initialize hash table for O(n) duplicate detection */
+    session_state_hash = g_hash_table_new_full(
+        session_state_key_hash, session_state_key_equal,
+        g_free, (GDestroyNotify)session_state_free);
 
     i = obt_xml_instance_new();
 
     if (!obt_xml_load_file(i, path, "openbox_session")) {
         ob_debug_type(OB_DEBUG_SM, "ERROR: session file is missing root node");
         obt_xml_instance_unref(i);
+        g_hash_table_destroy(session_state_hash);
+        session_state_hash = NULL;
         return;
     }
     node = obt_xml_root(i);
@@ -798,51 +817,32 @@ static void session_load_file(const gchar *path)
         session_state_free(state);
     }
 
-    /* Remove any duplicates.  This means that if two windows (or more) are
-       saved with the same session state, we won't restore a session for any
-       of them because we don't know what window to put what on. AHEM FIREFOX.
-
-       This is going to be an O(2^n) kind of operation unfortunately.
-    */
-    for (it = session_saved_state; it; it = inext) {
-        GList *jt, *jnext;
-        gboolean founddup = FALSE;
-        ObSessionState *s1 = it->data;
-
-        inext = g_list_next(it);
-
-        for (jt = g_list_next(it); jt; jt = jnext) {
-            ObSessionState *s2 = jt->data;
-            gboolean match;
-
-            jnext = g_list_next(jt);
-
-            if (s1->id && s2->id)
-                match = strcmp(s1->id, s2->id) == 0;
-            else if (s1->command && s2->command)
-                match = strcmp(s1->command, s2->command) == 0;
-            else
-                match = FALSE;
-
-            if (match &&
-                !strcmp(s1->name, s2->name) &&
-                !strcmp(s1->class, s2->class) &&
-                !strcmp(s1->role, s2->role))
-            {
-                ob_debug_type(OB_DEBUG_SM, "removing duplicate %s", s2->name);
-                session_state_free(s2);
-                session_saved_state =
-                    g_list_delete_link(session_saved_state, jt);
-                founddup = TRUE;
-            }
+    /* Replace O(2^n) with O(n) hash-based duplicate detection */
+    for (it = session_saved_state; it; it = g_list_next(it)) {
+        ObSessionState *state = it->data;
+        const gchar *key;
+        
+        if (state->id) {
+            key = state->id;
+        } else if (state->command) {
+            key = state->command;
+        } else {
+            ob_debug_type(OB_DEBUG_SM, "window without id or command: %s", state->name);
+            continue;
         }
-
-        if (founddup) {
-            ob_debug_type(OB_DEBUG_SM, "removing duplicate %s", s1->name);
-            session_state_free(s1);
+        
+        if (g_hash_table_contains(session_state_hash, key)) {
+            ob_debug_type(OB_DEBUG_SM, "removing duplicate window: %s", state->name);
+            session_state_free(state);
             session_saved_state = g_list_delete_link(session_saved_state, it);
+        } else {
+            g_hash_table_insert(session_state_hash, g_strdup(key), state);
         }
     }
+
+    /* Cleanup hash table */
+    g_hash_table_destroy(session_state_hash);
+    session_state_hash = NULL;
 
     obt_xml_instance_unref(i);
 }

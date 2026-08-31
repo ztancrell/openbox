@@ -28,6 +28,7 @@ Or use the included script:
 - **Session coordinate fix** — `session_save_to_file()` stored `pre_fullscreen_area.x` into the saved *y* coordinate. Windows restored from a session that had been fullscreened came back at the wrong vertical position. One character, real bug
 - **O(n) session loading** — duplicate saved-window detection was a nested loop comparing every state against every other. Replaced with a single `GHashTable` pass keyed on session id, falling back to the command string
 - **Wider title support** — `_NET_WM_NAME` and `_NET_WM_ICON_NAME` are now accepted in any encoding, not only `UTF8_STRING`, before falling back to the legacy `WM_NAME` / `WM_ICON_NAME`
+- **Stale-window cleanup** — client validation now verifies that each XID still names a live window. A short, coalesced post-launch sweep removes dead Proton/Wine clients automatically; Alt-Tab and close requests also validate them, and `_NET_CLIENT_LIST` is republished for taskbars
 - **Build scripts** — a full bootstrap-to-install pipeline, plus a verification-first variant that refuses to build unless every patch below is actually present in the tree
 - **Debug visibility** — every new guard logs through `ob_debug()`, so all of these conditions remain observable under `openbox --debug`
 
@@ -37,7 +38,7 @@ Or use the included script:
 |------|----------|--------|
 | `openbox/frame.c` | `check_32bit_client()` | Dropped `g_assert(ret != BadDrawable)` / `g_assert(ret != BadWindow)`. Returns `NULL` on a failed query or a `None` window |
 | `openbox/client.c` | `client_get_area()` | Dropped `g_assert(ret != BadWindow)`. Returns early on a failed geometry query |
-| `openbox/client.c` | `client_try_configure()` | Dropped `g_assert(*w > 0)` / `g_assert(*h > 0)`. Logs and returns on a non-positive computed size |
+| `openbox/client.c` | `client_try_configure()` | Dropped `g_assert(*w > 0)` / `g_assert(*h > 0)`. Logs and restores the current valid geometry on a non-positive computed size |
 | `openbox/client.c` | `client_fullscreen()` | Dropped the `pre_fullscreen_area` assert. Logs and returns instead of aborting on corrupt restored geometry |
 | `openbox/client.c` | `client_maximize()` | Dropped two `pre_max_area` asserts. Same treatment |
 | `obrender/image.c` | `ResizeImage()` | Dropped four dimension asserts. Returns `NULL` on a zero source or destination extent |

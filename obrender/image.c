@@ -21,7 +21,6 @@
 #include "image.h"
 #include "color.h"
 #include "imagecache.h"
-#include "../openbox/debug.h"
 #ifdef USE_IMLIB2
 #include <Imlib2.h>
 #endif
@@ -31,6 +30,16 @@
 #endif
 
 #include <glib.h>
+
+#define RR_IMAGE_MAX_DIMENSION 16384
+#define RR_IMAGE_MAX_PIXELS (4096 * 4096)
+
+static gboolean RrImageDimensionsValid(gint w, gint h)
+{
+    return w > 0 && h > 0 &&
+           w <= RR_IMAGE_MAX_DIMENSION && h <= RR_IMAGE_MAX_DIMENSION &&
+           (guint64)w * h <= RR_IMAGE_MAX_PIXELS;
+}
 
 #define FRACTION        12
 #define FLOOR(i)        ((i) & (~0UL << FRACTION))
@@ -56,14 +65,14 @@
 */
 static void RrImagePicInit(RrImagePic *pic, gint w, gint h, RrPixel32 *data)
 {
-    gint i;
+    gsize i, n = (gsize)w * h;
 
     pic->width = w;
     pic->height = h;
     pic->data = data;
     pic->sum = 0;
-    for (i = w*h; i > 0; --i)
-        pic->sum += *(data++);
+    for (i = 0; i < n; ++i)
+        pic->sum += data[i];
 }
 
 /*! Create a new RrImagePic from some picture data.
@@ -74,7 +83,7 @@ static RrImagePic* RrImagePicNew(gint w, gint h, RrPixel32 *data)
     RrImagePic *pic;
 
     pic = g_slice_new(RrImagePic);
-    RrImagePicInit(pic, w, h, g_memdup(data, w*h*sizeof(RrPixel32)));
+    RrImagePicInit(pic, w, h, g_memdup(data, (gsize)w * h * sizeof(RrPixel32)));
     return pic;
 }
 
@@ -420,7 +429,7 @@ void RrImageAddFromData(RrImage *self, RrPixel32 *data, gint w, gint h)
 
     g_return_if_fail(self != NULL);
     g_return_if_fail(data != NULL);
-    g_return_if_fail(w > 0 && h > 0);
+    g_return_if_fail(RrImageDimensionsValid(w, h));
 
     RrImagePicInit(&pic, w, h, data);
     set = g_hash_table_lookup(self->set->cache->pic_table, &pic);
@@ -441,7 +450,7 @@ RrImage* RrImageNewFromData(RrImageCache *cache, RrPixel32 *data,
 
     g_return_val_if_fail(cache != NULL, NULL);
     g_return_val_if_fail(data != NULL, NULL);
-    g_return_val_if_fail(w > 0 && h > 0, NULL);
+    g_return_val_if_fail(RrImageDimensionsValid(w, h), NULL);
 
     /* finds a picture in the cache, if it is already in there, and use the
        RrImageSet the picture lives in. */
@@ -506,6 +515,11 @@ ImlibLoader* LoadWithImlib(gchar *path,
     *width = imlib_image_get_width();
     *height = imlib_image_get_height();
 
+    if (!RrImageDimensionsValid(*width, *height)) {
+        DestroyImlibLoader(loader);
+        return NULL;
+    }
+
     return loader;
 }
 #endif  /* USE_IMLIB2 */
@@ -556,6 +570,11 @@ RsvgLoader* LoadWithRsvg(gchar *path,
     *width = dimension_data.width;
     *height = dimension_data.height;
 
+    if (!RrImageDimensionsValid(*width, *height)) {
+        DestroyRsvgLoader(loader);
+        return NULL;
+    }
+
     loader->surface = cairo_image_surface_create(
         CAIRO_FORMAT_ARGB32, *width, *height);
 
@@ -568,7 +587,7 @@ RsvgLoader* LoadWithRsvg(gchar *path,
         return NULL;
     }
 
-    loader->pixel_data = g_new(guint32, *width * *height);
+    loader->pixel_data = g_new(guint32, (gsize)*width * *height);
 
     /*
       Cairo has its data in ARGB with premultiplied alpha, but RrPixel32
@@ -680,6 +699,15 @@ RrImage* RrImageNewFromName(RrImageCache *cache, const gchar *name)
     */
 
     self = RrImageNewFromData(cache, data, w, h);
+    if (!self) {
+#if defined(USE_LIBRSVG)
+        DestroyRsvgLoader(rsvg_loader);
+#endif
+#if defined(USE_IMLIB2)
+        DestroyImlibLoader(imlib_loader);
+#endif
+        return NULL;
+    }
     RrImageSetAddName(self->set, name);
 
 #if defined(USE_LIBRSVG)
@@ -715,7 +743,8 @@ static RrImagePic* ResizeImage(RrPixel32 *src,
     gulong aspectW, aspectH;
 
     if (srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) {
-        ob_debug("invalid image dimensions: src=%dx%d, dst=%dx%d", srcW, srcH, dstW, dstH);
+        g_warning("invalid image dimensions: src=%lux%lu, dst=%lux%lu",
+                  srcW, srcH, dstW, dstH);
         return NULL;
     }
 

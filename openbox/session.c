@@ -682,16 +682,29 @@ GList* session_state_find(ObClient *c)
     return it;
 }
 
-static GHashTable *session_state_hash = NULL;
-
 static gboolean session_state_key_equal(gconstpointer v1, gconstpointer v2)
 {
-    return strcmp(v1, v2) == 0;
+    const ObSessionState *s1 = v1;
+    const ObSessionState *s2 = v2;
+
+    return ((s1->id && s2->id && !strcmp(s1->id, s2->id)) ||
+            (s1->command && s2->command &&
+             !strcmp(s1->command, s2->command))) &&
+           !strcmp(s1->name, s2->name) &&
+           !strcmp(s1->class, s2->class) &&
+           !strcmp(s1->role, s2->role);
 }
 
 static guint session_state_key_hash(gconstpointer v)
 {
-    return g_str_hash(v);
+    const ObSessionState *s = v;
+    guint hash;
+
+    hash = g_str_hash(s->id ? s->id : s->command);
+    hash = hash * 31 + g_str_hash(s->name);
+    hash = hash * 31 + g_str_hash(s->class);
+    hash = hash * 31 + g_str_hash(s->role);
+    return hash;
 }
 
 static void session_load_file(const gchar *path)
@@ -699,19 +712,17 @@ static void session_load_file(const gchar *path)
     ObtXmlInst *i;
     xmlNodePtr node, n, m;
     GList *it;
+    GHashTable *state_counts;
 
-    /* Initialize hash table for O(n) duplicate detection */
-    session_state_hash = g_hash_table_new_full(
-        session_state_key_hash, session_state_key_equal,
-        g_free, (GDestroyNotify)session_state_free);
+    state_counts = g_hash_table_new(session_state_key_hash,
+                                    session_state_key_equal);
 
     i = obt_xml_instance_new();
 
     if (!obt_xml_load_file(i, path, "openbox_session")) {
         ob_debug_type(OB_DEBUG_SM, "ERROR: session file is missing root node");
         obt_xml_instance_unref(i);
-        g_hash_table_destroy(session_state_hash);
-        session_state_hash = NULL;
+        g_hash_table_destroy(state_counts);
         return;
     }
     node = obt_xml_root(i);
@@ -783,6 +794,13 @@ static void session_load_file(const gchar *path)
             goto session_load_bail;
         state->h = obt_xml_node_int(n);
 
+        /* clamp geometry restored from disk so a truncated/crafted session
+           file cannot inject absurd or negative sizes into window sizing */
+        state->w = CLAMP(state->w, 1, 32767);
+        state->h = CLAMP(state->h, 1, 32767);
+        state->x = CLAMP(state->x, -32768, 32767);
+        state->y = CLAMP(state->y, -32768, 32767);
+
         state->shaded =
             obt_xml_find_node(node->children, "shaded") != NULL;
         state->iconic =
@@ -817,32 +835,32 @@ static void session_load_file(const gchar *path)
         session_state_free(state);
     }
 
-    /* Replace O(2^n) with O(n) hash-based duplicate detection */
+    /* Count equivalent entries in O(n).  The states remain owned by
+       session_saved_state; the table only borrows their pointers. */
     for (it = session_saved_state; it; it = g_list_next(it)) {
         ObSessionState *state = it->data;
-        const gchar *key;
-        
-        if (state->id) {
-            key = state->id;
-        } else if (state->command) {
-            key = state->command;
-        } else {
-            ob_debug_type(OB_DEBUG_SM, "window without id or command: %s", state->name);
-            continue;
-        }
-        
-        if (g_hash_table_contains(session_state_hash, key)) {
-            ob_debug_type(OB_DEBUG_SM, "removing duplicate window: %s", state->name);
-            session_state_free(state);
-            session_saved_state = g_list_delete_link(session_saved_state, it);
-        } else {
-            g_hash_table_insert(session_state_hash, g_strdup(key), state);
-        }
+        gpointer value = g_hash_table_lookup(state_counts, state);
+        guint count = GPOINTER_TO_UINT(value);
+        g_hash_table_insert(state_counts, state, GUINT_TO_POINTER(count + 1));
     }
 
-    /* Cleanup hash table */
-    g_hash_table_destroy(session_state_hash);
-    session_state_hash = NULL;
+    /* Ambiguous entries cannot be matched reliably, so remove every member
+       of a duplicate set, preserving the original behaviour.  Save the next
+       link before deleting the current one. */
+    for (it = session_saved_state; it;) {
+        GList *next = g_list_next(it);
+        ObSessionState *state = it->data;
+        gpointer value = g_hash_table_lookup(state_counts, state);
+
+        if (GPOINTER_TO_UINT(value) > 1) {
+            ob_debug_type(OB_DEBUG_SM, "removing duplicate %s", state->name);
+            session_state_free(state);
+            session_saved_state = g_list_delete_link(session_saved_state, it);
+        }
+        it = next;
+    }
+
+    g_hash_table_destroy(state_counts);
 
     obt_xml_instance_unref(i);
 }

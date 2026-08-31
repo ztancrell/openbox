@@ -73,6 +73,8 @@ GList          *client_list             = NULL;
 
 static GSList  *client_destroy_notifies = NULL;
 static RrImage *client_default_icon     = NULL;
+static guint    client_validation_timer = 0;
+static guint    client_validation_rounds = 0;
 
 static void client_get_all(ObClient *self, gboolean real);
 static void client_get_startup_id(ObClient *self);
@@ -115,6 +117,31 @@ static gboolean client_can_steal_focus(ObClient *self,
 static void client_setup_default_decor_and_functions(ObClient *self);
 static void client_setup_decor_undecorated(ObClient *self);
 
+static gboolean client_validation_timeout(gpointer data)
+{
+    (void)data;
+
+    client_validate_all();
+    if (--client_validation_rounds)
+        return TRUE;
+
+    client_validation_timer = 0;
+    return FALSE;
+}
+
+static void client_schedule_validation(void)
+{
+    if (client_validation_timer)
+        g_source_remove(client_validation_timer);
+
+    /* Proton/Wine can create a short-lived launch window and destroy it as
+       the real game window appears.  Coalesce window-creation bursts, then
+       check a few times without permanently polling the X server. */
+    client_validation_rounds = 5;
+    client_validation_timer =
+        g_timeout_add(1000, client_validation_timeout, NULL);
+}
+
 void client_startup(gboolean reconfig)
 {
     client_default_icon = RrImageNewFromData(
@@ -132,6 +159,12 @@ void client_shutdown(gboolean reconfig)
     client_default_icon = NULL;
 
     if (reconfig) return;
+
+    if (client_validation_timer) {
+        g_source_remove(client_validation_timer);
+        client_validation_timer = 0;
+        client_validation_rounds = 0;
+    }
 }
 
 static void client_call_notifies(ObClient *self, GSList *list)
@@ -532,6 +565,8 @@ void client_manage(Window window, ObPrompt *prompt)
 
     /* update the list hints */
     client_set_list();
+
+    client_schedule_validation();
 
     /* free the ObAppSettings shallow copy */
     g_slice_free(ObAppSettings, settings);
@@ -2312,11 +2347,15 @@ void client_update_icons(ObClient *self)
         while (i + 2 < num) { /* +2 is to make sure there is a w and h */
             w = data[i++];
             h = data[i++];
-            /* watch for the data being too small for the specified size,
-               or for zero sized icons. */
-            if (i + w*h > num || w == 0 || h == 0) {
-                i += w*h;
-                continue;
+            /* Watch for data too small for the specified size, zero-sized
+               icons, and w*h overflowing 32 bits.  Compute the product in
+               64 bits and bound each dimension so a malicious client cannot
+               make w*h wrap past this check and later be read as a much
+               larger image (heap over-read / crash). */
+            if (w == 0 || h == 0 || w > 16384 || h > 16384 ||
+                (guint64)w * h > 4096 * 4096 ||
+                (guint64)w * h > (guint64)(num - i)) {
+                break;
             }
 
             /* convert it to the right bit order for ObRender */
@@ -2774,9 +2813,24 @@ static void client_calc_layer_internal(ObClient *self)
 void client_calc_layer(ObClient *self)
 {
     GList *it, *fs_start, *fs_end;
+    GList *list;
+
+    /* Fast path: if nothing is in the fullscreen layer, the post-pass below
+       is empty, so we can skip copying the whole stacking_list (this runs on
+       every focus/map/unmap).  This scan is allocation-free. */
+    for (it = stacking_list; it; it = g_list_next(it)) {
+        ObStackingLayer l = window_layer(it->data);
+        if (l < OB_STACKING_LAYER_FULLSCREEN) break;   /* below the fs band */
+        if (l == OB_STACKING_LAYER_FULLSCREEN) break;  /* fs window exists */
+    }
+    if (!(it && window_layer(it->data) == OB_STACKING_LAYER_FULLSCREEN)) {
+        client_calc_layer_internal(self);
+        return;
+    }
+
     /* the client_calc_layer_internal calls below modify stacking_list,
        so we have to make a copy to iterate over */
-    GList *list = g_list_copy(stacking_list);
+    list = g_list_copy(stacking_list);
 
     /* skip over stuff above fullscreen layer */
     for (it = list; it; it = g_list_next(it))
@@ -3239,7 +3293,12 @@ void client_try_configure(ObClient *self, gint *x, gint *y, gint *w, gint *h,
 
     if (*w <= 0 || *h <= 0) {
         ob_debug("invalid calculated size: %dx%d", *w, *h);
-        return;
+        *x = self->area.x;
+        *y = self->area.y;
+        *w = MAX(self->area.width, 1);
+        *h = MAX(self->area.height, 1);
+        *logicalw = MAX(self->logical_size.width, 1);
+        *logicalh = MAX(self->logical_size.height, 1);
     }
 }
 
@@ -3405,6 +3464,15 @@ void client_fullscreen(ObClient *self, gboolean fs)
     if (!(self->functions & OB_CLIENT_FUNC_FULLSCREEN) || /* can't */
         self->fullscreen == fs) return;                   /* already done */
 
+    /* Validate restore data before changing any externally visible state. */
+    if (!fs && (self->pre_fullscreen_area.width <= 0 ||
+                self->pre_fullscreen_area.height <= 0)) {
+        ob_debug("invalid pre_fullscreen_area: %dx%d",
+                 self->pre_fullscreen_area.width,
+                 self->pre_fullscreen_area.height);
+        return;
+    }
+
     self->fullscreen = fs;
     client_change_state(self); /* change the state hints on the client */
 
@@ -3431,13 +3499,6 @@ void client_fullscreen(ObClient *self, gboolean fs)
         w = self->area.width;
         h = self->area.height;
     } else {
-        if (self->pre_fullscreen_area.width <= 0 ||
-            self->pre_fullscreen_area.height <= 0) {
-            ob_debug("invalid pre_fullscreen_area: %dx%d", 
-                     self->pre_fullscreen_area.width, self->pre_fullscreen_area.height);
-            return;
-        }
-
         self->max_horz = self->pre_fullscreen_max_horz;
         self->max_vert = self->pre_fullscreen_max_vert;
         if (self->max_horz) {
@@ -3581,12 +3642,21 @@ void client_maximize(ObClient *self, gboolean max, gint dir)
                      self->pre_max_area.width, self->area.height);
         }
     } else {
-        if ((dir == 0 || dir == 1) && self->max_horz) { /* horz */
-            if (self->pre_max_area.width <= 0) {
-                ob_debug("invalid pre_max_area width: %d", self->pre_max_area.width);
-                return;
-            }
+        /* Validate both axes before clearing either saved dimension. */
+        if ((dir == 0 || dir == 1) && self->max_horz &&
+            self->pre_max_area.width <= 0) {
+            ob_debug("invalid pre_max_area width: %d",
+                     self->pre_max_area.width);
+            return;
+        }
+        if ((dir == 0 || dir == 2) && self->max_vert &&
+            self->pre_max_area.height <= 0) {
+            ob_debug("invalid pre_max_area height: %d",
+                     self->pre_max_area.height);
+            return;
+        }
 
+        if ((dir == 0 || dir == 1) && self->max_horz) { /* horz */
             x = self->pre_max_area.x;
             w = self->pre_max_area.width;
 
@@ -3594,11 +3664,6 @@ void client_maximize(ObClient *self, gboolean max, gint dir)
                      0, self->pre_max_area.height);
         }
         if ((dir == 0 || dir == 2) && self->max_vert) { /* vert */
-            if (self->pre_max_area.height <= 0) {
-                ob_debug("invalid pre_max_area height: %d", self->pre_max_area.height);
-                return;
-            }
-
             y = self->pre_max_area.y;
             h = self->pre_max_area.height;
 
@@ -3660,6 +3725,10 @@ static void client_ping_event(ObClient *self, gboolean dead)
 
 void client_close(ObClient *self)
 {
+    if (!client_validate(self)) {
+        client_unmanage(self);
+        return;
+    }
     if (!(self->functions & OB_CLIENT_FUNC_CLOSE)) return;
 
     /* if closing an internal obprompt, that is just cancelling it */
@@ -3914,15 +3983,43 @@ static gboolean find_destroy_unmap(XEvent *e, gpointer data)
 gboolean client_validate(ObClient *self)
 {
     struct ObClientFindDestroyUnmap find;
+    XWindowAttributes attributes;
+    gboolean valid;
 
     XSync(obt_display, FALSE); /* get all events on the server */
 
     find.window = self->window;
     find.ignore_unmaps = self->ignore_unmaps;
-    if (xqueue_exists_local(find_destroy_unmap, &find))
+    valid = !xqueue_exists_local(find_destroy_unmap, &find);
+
+    /* A buggy or abruptly exiting client can disappear without a usable
+       DestroyNotify reaching this ObClient.  Confirm that the XID advertised
+       in _NET_CLIENT_LIST still names a real window. */
+    if (valid) {
+        obt_display_ignore_errors(TRUE);
+        valid = XGetWindowAttributes(obt_display, self->window, &attributes);
+        obt_display_ignore_errors(FALSE);
+    }
+
+    if (!valid) {
+        ob_debug("Stale client found for window 0x%lx", self->window);
         return FALSE;
+    }
 
     return TRUE;
+}
+
+void client_validate_all(void)
+{
+    GList *it;
+
+    for (it = client_list; it;) {
+        GList *next = g_list_next(it);
+        ObClient *client = it->data;
+        if (!client_validate(client))
+            client_unmanage(client);
+        it = next;
+    }
 }
 
 void client_set_wm_state(ObClient *self, glong state)

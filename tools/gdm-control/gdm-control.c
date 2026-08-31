@@ -163,7 +163,8 @@ static gboolean gdm_authenticate()
 
 static gboolean gdm_connect()
 {
-    struct sockaddr_un  addr;
+    struct sockaddr_un  addr = { 0 };
+    const char         *socket_path;
     char               *response;
 
     assert(fd <= 0);
@@ -176,9 +177,16 @@ static gboolean gdm_connect()
     }
 
     if (g_file_test(GDM_PROTOCOL_SOCKET_PATH1, G_FILE_TEST_EXISTS))
-        strcpy(addr.sun_path, GDM_PROTOCOL_SOCKET_PATH1);
+        socket_path = GDM_PROTOCOL_SOCKET_PATH1;
     else
-        strcpy(addr.sun_path, GDM_PROTOCOL_SOCKET_PATH2);
+        socket_path = GDM_PROTOCOL_SOCKET_PATH2;
+
+    if (g_strlcpy(addr.sun_path, socket_path, sizeof(addr.sun_path)) >=
+        sizeof(addr.sun_path)) {
+        g_warning("GDM socket path is too long: %s", socket_path);
+        gdm_disconnect();
+        return FALSE;
+    }
 
     addr.sun_family = AF_UNIX;
 

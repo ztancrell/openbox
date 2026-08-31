@@ -117,6 +117,9 @@ ObClient* focus_cycle(gboolean forward, gboolean all_desktops,
     } else if (done)
         goto done_cycle;
 
+    if (focus_cycle_target == NULL)
+        client_validate_all();
+
     if (!focus_order)
         goto done_cycle;
 
@@ -284,6 +287,9 @@ ObClient* focus_directional_cycle(ObDirection dir, gboolean dock_windows,
         goto done_cycle;
     } else if (done && interactive)
         goto done_cycle;
+
+    if (focus_cycle_target == NULL)
+        client_validate_all();
 
     if (!focus_order)
         goto done_cycle;

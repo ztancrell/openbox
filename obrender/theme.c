@@ -1413,16 +1413,14 @@ static gboolean read_appearance(XrmDatabase db, const RrInstance *inst,
 
 static int parse_inline_number(const char *p)
 {
-    int neg = 1;
-    int res = 0;
-    if (*p == '-') {
-        neg = -1;
-        ++p;
-    }
-    for (; isdigit(*p); ++p)
-        res = res * 10 + *p - '0';
-    res *= neg;
-    return res;
+    long res = strtol(p, NULL, 10);
+
+    /* Shadow tint is a percentage and offsets outside this range are not
+       useful.  Keeping both bounded also makes the later i*255 arithmetic
+       safe. */
+    if (res > 100) res = 100;
+    else if (res < -100) res = -100;
+    return (int)res;
 }
 
 static void set_default_appearance(RrAppearance *a)

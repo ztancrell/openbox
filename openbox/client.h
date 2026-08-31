@@ -568,12 +568,15 @@ gboolean client_hide(ObClient *self);
 */
 void client_showhide(ObClient *self);
 
-/*! Validate client, by making sure no Destroy or Unmap events exist in
-  the event queue for the window.
+/*! Validate a client by checking whether its X window still exists and
+  whether a Destroy/Unmap event that will unmanage it is already queued.
   @return true if the client is valid; false if the client has already
-          been unmapped/destroyed, and so is invalid.
+          been unmapped/destroyed.
 */
 gboolean client_validate(ObClient *self);
+
+/*! Remove invalid clients before exposing or iterating the client list. */
+void client_validate_all(void);
 
 /*! Sets the wm_state to the specified value */
 void client_set_wm_state(ObClient *self, glong state);

@@ -49,13 +49,12 @@ Or use the included script:
 
 The trade is deliberate: availability over strictness. An assertion that fires is telling you something is wrong, and converting it to a return can let a genuine upstream bug pass quietly. That is an acceptable trade for a daily-driver desktop and **not** obviously the right call for upstream, which is one reason these live in a fork.
 
-The out-of-bounds read in `obt/prop.c` is the one change here that is unambiguously a bug fix rather than a trade, since the length is attacker-controlled by any client that can set a property:
+The out-of-bounds read in `obt/prop.c` is the one change here that is unambiguously a bug fix rather than a trade, since the length is attacker-controlled by any client that can set a property. X11 text properties are length-delimited, so the parser makes an explicitly terminated copy: this safely accepts the normal case where the final string has no NUL byte inside `nitems`.
 
 ```c
-gsize remain = (gchar*)tprop->value + tprop->nitems - p;
-gsize slen = strnlen(p, remain);
-if (slen == remain) break;   /* not null-terminated */
-p += slen + 1;
+bounded = g_malloc(tprop->nitems + 1);
+memcpy(bounded, tprop->value, tprop->nitems);
+bounded[tprop->nitems] = '\0';
 ```
 
 ### Scripts

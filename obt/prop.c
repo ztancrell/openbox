@@ -339,6 +339,7 @@ static void* convert_text_property(XTextProperty *tprop,
     const gboolean return_single = (max == 1);
     gboolean ok = FALSE;
     gchar **strlist = NULL;
+    gchar *bounded = NULL;
     gchar *single[1] = { NULL };
     gchar **retlist = single; /* single is used when max == 1 */
     gint i, n_strs;
@@ -368,6 +369,7 @@ static void* convert_text_property(XTextProperty *tprop,
              tprop->encoding == OBT_PROP_ATOM(STRING))
     {
         gchar *p; /* iterator */
+        gchar *end;
 
         if (tprop->encoding == OBT_PROP_ATOM(STRING))
             encoding = LATIN1;
@@ -375,16 +377,27 @@ static void* convert_text_property(XTextProperty *tprop,
             encoding = UTF8;
         ok = TRUE;
 
+        /* X text properties are length-delimited.  Their final string does
+           not have to include a NUL byte in nitems, so make a bounded,
+           explicitly terminated copy before treating the value as strings.
+           This accepts normal _NET_WM_NAME values without reading beyond the
+           property data. */
+        bounded = g_malloc(tprop->nitems + 1);
+        memcpy(bounded, tprop->value, tprop->nitems);
+        bounded[tprop->nitems] = '\0';
+        end = bounded + tprop->nitems;
+
         /* First, count the number of strings. Then make a structure for them
            and copy pointers to them into it. */
-        p = (gchar*)tprop->value;
+        p = bounded;
         n_strs = 0;
-        while (p < (gchar*)tprop->value + tprop->nitems) {
-            gsize remain = (gchar*)tprop->value + tprop->nitems - p;
+        while (p < end) {
+            gsize remain = end - p;
             gsize slen = strnlen(p, remain);
-            if (slen == remain) break; /* not null-terminated */
-            p += slen + 1;
             ++n_strs;
+            p += slen;
+            if (p < end)
+                ++p; /* skip an in-property NUL separator */
         }
 
         if (max >= 0)
@@ -392,18 +405,21 @@ static void* convert_text_property(XTextProperty *tprop,
         if (!return_single)
             retlist = g_new0(gchar*, n_strs+1);
         if (retlist) {
-            p = (gchar*)tprop->value;
+            p = bounded;
             for (i = 0; i < n_strs; ++i) {
-                retlist[i] = p;
-                gsize remain = (gchar*)tprop->value + tprop->nitems - p;
+                gsize remain = end - p;
                 gsize slen = strnlen(p, remain);
-                p += slen + 1;
+                retlist[i] = p;
+                p += slen;
+                if (p < end)
+                    ++p;
             }
         }
     }
 
     if (!(ok && retlist)) {
         if (strlist) XFreeStringList(strlist);
+        g_free(bounded);
         return NULL;
     }
 
@@ -470,6 +486,7 @@ static void* convert_text_property(XTextProperty *tprop,
     }
 
     if (strlist) XFreeStringList(strlist);
+    g_free(bounded);
     if (return_single)
         return retlist[0];
     else

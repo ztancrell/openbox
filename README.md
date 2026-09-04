@@ -1,105 +1,98 @@
-# Openbox
+# Openbox Patchwork
 
-A fork of [danakj's Openbox](https://github.com/danakj/openbox) with stability patches: crash hardening, an out-of-bounds read fix, a session coordinate bug, O(n) session loading, wider window-title support, and build scripts.
+> An unofficial, AI-assisted Openbox maintenance fork focused on stability,
+> compatibility, and defensive hardening.
 
-Reviewed and optimized with [OpenCode AI](https://opencode.ai).
+Openbox Patchwork carries a small, reviewable patch set on top of
+[Openbox 3.7](https://github.com/danakj/openbox). It keeps the `openbox`
+binary, configuration paths, themes, and X11 identities unchanged so existing
+Openbox setups continue to work.
 
-Standards-compliant, highly configurable X11 window manager.
+This is an experimental maintenance fork, not an independently audited or
+upstream-supported security release. Report Patchwork bugs here, not to the
+upstream Openbox maintainers.
 
-Based on **Openbox 3.7**, upstream commit [`3a2fbc65`](https://github.com/danakj/openbox/commit/3a2fbc65186c54855915490ec3d0b4b2ddc079ea). Full upstream history is preserved — `git log` and `git blame` still attribute every line to whoever wrote it.
+## Patch set
+
+- **Stale-client cleanup** detects XIDs that no longer name live windows and
+  removes them from Openbox's client lists. This targets phantom Proton/Wine
+  entries such as “Untitled” or “Unnamed Window” in taskbars and Alt-Tab.
+- **Safe X11 text parsing** bounds property reads while preserving valid,
+  length-delimited window titles that do not contain a trailing NUL byte.
+- **Runtime crash guards** handle destroyed windows and invalid restored
+  geometry without aborting the entire window manager.
+- **Bounded image handling** rejects unreasonable image and icon dimensions
+  before size calculations and allocations.
+- **Session restore fixes** correct fullscreen coordinates and replace
+  quadratic duplicate matching with an ownership-safe hash-table pass.
+- **Additional hardening** covers theme-number parsing, fullscreen stacking,
+  and GDM socket path handling.
+
+The patch set currently tracks upstream commit
+[`3a2fbc65`](https://github.com/danakj/openbox/commit/3a2fbc65186c54855915490ec3d0b4b2ddc079ea).
+Upstream history and attribution remain intact in `git log` and `git blame`.
+
+## Build and install
+
+From a Git checkout:
 
 ```sh
-./bootstrap          # only from a git checkout
-./configure
-make
+./bootstrap
+./configure --prefix=/usr/local --enable-debug
+make -j"$(nproc)"
+make check
 sudo make install
 ```
 
-Or use the included script:
+The bundled installer performs the same workflow:
 
 ```sh
 ./install-openbox.sh --install-path /usr/local
 ```
 
-### Fork Features
+Installation under `/usr/local` does not replace a distribution package in
+`/usr/bin`. Confirm which binary is active with:
 
-- **Crash hardening** — six `g_assert()` calls on code paths that can legitimately fail at runtime, converted to logged early-returns. A failed X11 round trip against a destroyed window no longer aborts the window manager and takes the session with it
-- **Bounded property reads** — `convert_text_property()` walked text properties with `strlen()`, reading past the end of the buffer when a client sets a property that is not NUL-terminated. Now bounds-checked with `strnlen()`
-- **Session coordinate fix** — `session_save_to_file()` stored `pre_fullscreen_area.x` into the saved *y* coordinate. Windows restored from a session that had been fullscreened came back at the wrong vertical position. One character, real bug
-- **O(n) session loading** — duplicate saved-window detection was a nested loop comparing every state against every other. Replaced with a single `GHashTable` pass keyed on session id, falling back to the command string
-- **Wider title support** — `_NET_WM_NAME` and `_NET_WM_ICON_NAME` are now accepted in any encoding, not only `UTF8_STRING`, before falling back to the legacy `WM_NAME` / `WM_ICON_NAME`
-- **Stale-window cleanup** — client validation now verifies that each XID still names a live window. A short, coalesced post-launch sweep removes dead Proton/Wine clients automatically; Alt-Tab and close requests also validate them, and `_NET_CLIENT_LIST` is republished for taskbars
-- **Build scripts** — a full bootstrap-to-install pipeline, plus a verification-first variant that refuses to build unless every patch below is actually present in the tree
-- **Debug visibility** — every new guard logs through `ob_debug()`, so all of these conditions remain observable under `openbox --debug`
-
-### Crash Hardening
-
-| File | Function | Change |
-|------|----------|--------|
-| `openbox/frame.c` | `check_32bit_client()` | Dropped `g_assert(ret != BadDrawable)` / `g_assert(ret != BadWindow)`. Returns `NULL` on a failed query or a `None` window |
-| `openbox/client.c` | `client_get_area()` | Dropped `g_assert(ret != BadWindow)`. Returns early on a failed geometry query |
-| `openbox/client.c` | `client_try_configure()` | Dropped `g_assert(*w > 0)` / `g_assert(*h > 0)`. Logs and restores the current valid geometry on a non-positive computed size |
-| `openbox/client.c` | `client_fullscreen()` | Dropped the `pre_fullscreen_area` assert. Logs and returns instead of aborting on corrupt restored geometry |
-| `openbox/client.c` | `client_maximize()` | Dropped two `pre_max_area` asserts. Same treatment |
-| `obrender/image.c` | `ResizeImage()` | Dropped four dimension asserts. Returns `NULL` on a zero source or destination extent |
-
-### Details
-
-`g_assert()` aborts the process. That is correct for a violated invariant, but several of these conditions are not invariants — an X server round trip against a window that a client destroyed a microsecond ago legitimately fails, and geometry read back from a truncated session file is legitimately garbage. Aborting the window manager over either one loses every open window, not just the offending one.
-
-The trade is deliberate: availability over strictness. An assertion that fires is telling you something is wrong, and converting it to a return can let a genuine upstream bug pass quietly. That is an acceptable trade for a daily-driver desktop and **not** obviously the right call for upstream, which is one reason these live in a fork.
-
-The out-of-bounds read in `obt/prop.c` is the one change here that is unambiguously a bug fix rather than a trade, since the length is attacker-controlled by any client that can set a property. X11 text properties are length-delimited, so the parser makes an explicitly terminated copy: this safely accepts the normal case where the final string has no NUL byte inside `nitems`.
-
-```c
-bounded = g_malloc(tprop->nitems + 1);
-memcpy(bounded, tprop->value, tprop->nitems);
-bounded[tprop->nitems] = '\0';
+```sh
+readlink -f "/proc/$(pgrep -xo openbox)/exe"
 ```
 
-### Scripts
+For Ly, include the local X session directory in `/etc/ly/config.ini`:
 
-| Script | Purpose |
-|--------|---------|
-| `install-openbox.sh` | Full build: dependency check, `bootstrap`, `configure --enable-debug`, parallel `make`, `sudo make install`, version verification. Supports `--install-path`, `--build-dir`, `--rebuild`, `--dry-run`, `--verbose`. Refuses to run as root |
-| `install-openbox-minimal.sh` | Verification-first installer for an already-configured tree. Greps the source to confirm each patch above is present, aborts if any is missing, then builds and installs |
+```ini
+xsessions = /usr/share/xsessions:/usr/local/share/xsessions
+```
 
-### Not Included
+Then select the locally installed Openbox session at login.
 
-Four changes were written for this fork and then rejected during review. Documenting them matters as much as the changelog:
+## Testing
 
-- **No `po/` changes** — a regeneration pass rebuilt the translation catalogs against a stale 2014 `.pot` template, silently dropping 3 Bulgarian and 8 Esperanto translated strings. Fully reverted; the translations here are upstream's, untouched
-- **No image-cache changes** — a refactor of `obrender/imagecache.c` attached `GDestroyNotify` callbacks that dereferenced their argument as `CachedImage *`, when the tables actually store `RrImageSet *`. Type confusion, double-free on every eviction, and redundant besides — `RrImageSet` lifetime is already handled by explicit refcounting in `obrender/image.c`. Reverted
-- **No renderer changes** — a "GPU cache" in `obrender/render.c` amounted to five declarations and a function that nothing in the tree ever read, wrote, or called. Reverted
-- **No new features** — this fork fixes crashes. That is all it does
+Every proposed change should at minimum pass a clean build, `make check`, and
+`git diff --check`. Window-lifecycle or property changes should also be tested
+under Xvfb and on a real X11 session before release.
 
-### AI Disclosure
+Tests reduce risk; they do not make this fork a security audit. See
+[AI_ASSISTANCE.md](AI_ASSISTANCE.md) for the project policy, review process,
+and known limitations.
 
-**Every source change in this fork was written by [OpenCode AI](https://opencode.ai), not hand-written by me.** I chose the targets, reviewed the output, run the result as my daily window manager, and made the final call on what ships.
+## Compatibility and scope
 
-The four items under [Not Included](#not-included) are the AI's rejected work. Two of them — the double-free and the lost translations — were worse than the bugs they were meant to fix, and **all four were caught by review, not by the AI.** Extend the surviving patches proportionate skepticism: they are small, they are tested on one machine, and no upstream maintainer has looked at them.
+Patchwork intentionally does not rename the executable or installed Openbox
+resources. The project name identifies this source distribution; applications
+and desktop-session tooling still interact with Openbox normally.
 
-**None of this has been submitted to or accepted by upstream Openbox.** Do not report bugs in this fork to the Openbox maintainers.
+Rejected experiments are not kept in the production patch set. In particular,
+previous image-cache, renderer-cache, and regenerated-translation changes were
+discarded after review found correctness or data-loss problems.
 
-### Credits
+## Credits and license
 
-Openbox is the work of many people over two decades and **7,661 commits**. This fork contributes roughly 100 changed lines to a project of over 52,000 lines of C. The credit belongs upstream; the bugs in this fork are mine.
+Openbox is the work of Dana Jansens and its many contributors. See [AUTHORS](AUTHORS)
+and the preserved repository history for attribution.
 
-| Contributor | Commits |
-|-------------|---------|
-| **Dana Jansens** — original author and maintainer; Openbox as it exists today is largely her work | 6,399 |
-| **Mikael Magnusson** | 819 |
-| **Scott Moynes** | 127 |
-| **Derek Foreman** | 84 |
-| **Marius Nita** | 82 |
+Openbox Patchwork is distributed under the same GNU General Public License,
+version 2 or later. See [COPYING](COPYING). Copyright for existing Openbox code
+remains with its original authors.
 
-...and everyone else in [`AUTHORS`](AUTHORS) and `git shortlog -sn`, including every translator whose work lives in `po/` — which is precisely why the accidental translation regression above was reverted rather than shipped.
-
-- Upstream repository: <https://github.com/danakj/openbox>
-- Project website: <http://openbox.org>
-
-### License
-
-GNU General Public License, version 2 or later — inherited from Openbox and unchanged. See [`COPYING`](COPYING).
-
-Copyright for all pre-existing Openbox code remains with its original authors. The modifications described here are released under the same license.
+- Upstream source: <https://github.com/danakj/openbox>
+- Upstream website: <http://openbox.org>

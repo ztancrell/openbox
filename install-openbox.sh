@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# OpenBox Live Patch installer
-# This script builds and installs the OpenBox version with all the latest performance and bug fixes
+# Openbox Patchwork installer
+# Build, test, and install the Openbox Patchwork maintenance fork.
 # Usage: ./install-openbox.sh [options]
 
 set -e  # Exit on error
@@ -22,7 +22,7 @@ SKIP_TESTS=false
 # Print usage information
 function print_usage() {
     cat << EOF
-OpenBox Live Patch Installer
+Openbox Patchwork Installer
 
 Usage: $0 [OPTIONS]
 
@@ -36,17 +36,17 @@ Options:
     --dry-run              Show commands without executing
 
 This script will:
-1. Bootstrap the OpenBox source
+1. Bootstrap the Openbox source
 2. Configure with default settings
-3. Build with all optimizations
-4. Install the patched version
+3. Build and test the patch set
+4. Install Openbox Patchwork
 5. Refresh PATH and verify installation
 
-The script includes fixes for:
-- Session loading performance (O(2ⁿ) → O(n))
-- Image cache memory leaks
-- Window coordinate and validation bugs
-- Font rendering optimizations
+The patch set includes:
+- stale X11 client cleanup
+- bounded property, icon, and image handling
+- safer geometry and session restoration
+- targeted parsing and socket hardening
 
 EOF
 }
@@ -104,22 +104,19 @@ function check_requirements() {
 function run_command() {
     local attempt=1
     local max_attempts=3
-    local command="$*"
     local temp_file
 
     while [ $attempt -le $max_attempts ]; do
-        log "Attempt $attempt/$max_attempts: $command"
+        log "Attempt $attempt/$max_attempts: $*"
 
         if [ "$DRY_RUN" = true ]; then
-            echo "DRY RUN: Would run: $command"
+            echo "DRY RUN: Would run: $*"
             return 0
         fi
 
         if temp_file=$(mktemp); then
-            if $command > "$temp_file" 2>&1; then
-                if [ "$VERBOSE" = true ] || [ $? -eq 0 ]; then
-                    log "Command executed successfully"
-                fi
+            if "$@" > "$temp_file" 2>&1; then
+                log "Command executed successfully"
                 rm -f "$temp_file"
                 return 0
             else
@@ -154,11 +151,11 @@ function bootstrap() {
 
     if [ ! -x "$bootstrap_script" ]; then
         error "Bootstrap script not found at $bootstrap_script"
-        error "This repository may not be a standard OpenBox source tree."
+        error "This repository may not be a standard Openbox source tree."
         return 1
     fi
 
-    success "Bootstrapping OpenBox..."
+    success "Bootstrapping Openbox..."
     if run_command bash "$bootstrap_script"; then
         success "Bootstrap completed successfully"
         return 0
@@ -178,7 +175,7 @@ function configure() {
         return 1
     fi
 
-    success "Configuring OpenBox with options: $configure_options"
+    success "Configuring Openbox with options: $configure_options"
     if run_command bash "$configure_script" $configure_options; then
         success "Configuration completed successfully"
         return 0
@@ -192,7 +189,7 @@ function configure() {
 function build() {
     local make_options="-j$(nproc)"
 
-    success "Building OpenBox with parallel jobs: $make_options"
+    success "Building Openbox with parallel jobs: $make_options"
     if run_command make $make_options; then
         success "Build completed successfully"
         return 0
@@ -202,11 +199,27 @@ function build() {
     fi
 }
 
+function test_build() {
+    if [ "$SKIP_TESTS" = true ]; then
+        warning "Skipping tests at user request"
+        return 0
+    fi
+
+    success "Running test suite..."
+    if run_command make check; then
+        success "Tests completed successfully"
+        return 0
+    else
+        error "Tests failed; refusing to install"
+        return 1
+    fi
+}
+
 # Install step
 function install() {
     local install_script="$BUILD_DIR/make install"
 
-    success "Installing OpenBox to $INSTALL_PREFIX"
+    success "Installing Openbox Patchwork to $INSTALL_PREFIX"
     log "This will require administrator privileges."
 
     # Use sudo with password prompt
@@ -234,35 +247,31 @@ function install() {
 
 # Refresh PATH and verify
 function verify() {
-    success "Refreshing PATH and verifying installation..."
+    local installed="$INSTALL_PREFIX/bin/openbox"
+
+    success "Verifying installation..."
 
     if [ "$DRY_RUN" = true ]; then
         echo "DRY RUN: Would refresh PATH and run openbox --version"
         return 0
     fi
 
-    # Refresh PATH to use newly installed version
-    hash -r
-
-    # Verify installation
-    if command -v openbox &>/dev/null; then
+    if [ -x "$installed" ]; then
         local version_output
-        version_output=$(openbox --version 2>&1)
+        version_output=$("$installed" --version 2>&1)
 
         if echo "$version_output" | grep -q "Openbox"; then
-            success "OpenBox installation verified:"
+            success "Openbox Patchwork installation verified:"
             echo "  Version: $(echo "$version_output" | head -1)"
-            echo "  Installation location: $(which openbox)"
-            echo "  ✓ Patched version is now running"
+            echo "  Installation location: $installed"
             return 0
         else
-            warning "OpenBox command found but version output is unexpected:"
+            warning "Installed binary has unexpected version output:"
             echo "$version_output"
             return 0
         fi
     else
-        error "OpenBox command not found after installation"
-        error "Please check installation location: $INSTALL_PREFIX/bin"
+        error "Openbox was not installed at $installed"
         return 1
     fi
 }
@@ -284,32 +293,14 @@ function cleanup() {
 function print_summary() {
     cat << EOF
 
-╔══════════════════════════════════════════════════════════════╗
-║ OpenBox Live Patch Installation Complete!                   ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                              ║
-║ Fixes Applied:                                               ║
-║ • Session loading: O(2ⁿ) → O(n) optimization              ║
-║ • Image cache: Memory leak fixes                          ║
-║ • Window validation: NULL pointer protection              ║
-║ • Font rendering: Performance improvements                ║
-║ • Configuration: Clean builds                              ║
-║                                                              ║
-║ Key Benefits:                                                ║
-║ • Faster session restores (99.99% improvement)           ║
-║ • Bounded memory usage (<50MB)                            ║
-║ • No crashes from invalid window coordinates             ║
-║ • Smoother font rendering                                  ║
-║                                                              ║
-║ Installation:                                              ║
-║ • Binary: $(which openbox 2>/dev/null || echo '/usr/local/bin/openbox') ║
-║ • Build directory: $BUILD_DIR                             ║
-║ • Install prefix: $INSTALL_PREFIX                         ║
-║                                                              ║
-║ Launch OpenBox with:                                        ║
-║   openbox                                                    ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
+Openbox Patchwork installation complete.
+
+  Binary: $INSTALL_PREFIX/bin/openbox
+  Build directory: $BUILD_DIR
+  Install prefix: $INSTALL_PREFIX
+
+Select the locally installed Openbox session at login, or replace the
+current window manager explicitly after saving your work.
 
 EOF
 }
@@ -367,13 +358,19 @@ done
 # Main execution
 main() {
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║ OpenBox Live Patch Installer                                  ║"
+    echo "║ Openbox Patchwork Installer                                   ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
 
     # Check environment
     check_root
     check_requirements
+
+    if ! cd "$BUILD_DIR"; then
+        error "Cannot enter build directory: $BUILD_DIR"
+        exit 1
+    fi
+    BUILD_DIR=$(pwd)
 
     # Build steps
     if [ "$REBUILD" = true ] || [ ! -f "$BUILD_DIR/configure" ]; then
@@ -385,6 +382,7 @@ main() {
 
     configure || exit 1
     build || exit 1
+    test_build || exit 1
     install || exit 1
     verify || exit 1
 

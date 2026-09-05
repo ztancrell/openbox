@@ -146,7 +146,12 @@ static gint xerror_handler(Display *d, XErrorEvent *e)
         if (e->error_code == BadWindow)
             /*g_debug(_("X Error: %s\n"), errtxt)*/;
         else
-            g_error("X Error: %s", errtxt);
+            /* X11 errors are asynchronous and may be caused by a client
+               disappearing or submitting an invalid request.  A diagnostic
+               build must not turn a recoverable protocol error into a fatal
+               window-manager abort. */
+            g_warning("X Error: %s (request %d.%d, resource 0x%lx)",
+                      errtxt, e->request_code, e->minor_code, e->resourceid);
     } else
         g_debug("Ignoring XError code %d '%s'", e->error_code, errtxt);
 #else

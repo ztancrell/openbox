@@ -662,16 +662,18 @@ static void event_process(const XEvent *ec, gpointer data)
             ObClient *c = client_fake_manage(e->xclient.window);
             gulong vals[4];
 
-            /* set the frame extents on the window */
-            vals[0] = c->frame->size.left;
-            vals[1] = c->frame->size.right;
-            vals[2] = c->frame->size.top;
-            vals[3] = c->frame->size.bottom;
-            OBT_PROP_SETA32(e->xclient.window, NET_FRAME_EXTENTS,
-                            CARDINAL, vals, 4);
+            if (c) {
+                /* set the frame extents on the window */
+                vals[0] = c->frame->size.left;
+                vals[1] = c->frame->size.right;
+                vals[2] = c->frame->size.top;
+                vals[3] = c->frame->size.bottom;
+                OBT_PROP_SETA32(e->xclient.window, NET_FRAME_EXTENTS,
+                                CARDINAL, vals, 4);
 
-            /* Free the pretend client */
-            client_fake_unmanage(c);
+                /* Free the pretend client */
+                client_fake_unmanage(c);
+            }
         }
     }
     else if (e->type == ConfigureRequest) {

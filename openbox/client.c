@@ -76,11 +76,11 @@ static RrImage *client_default_icon     = NULL;
 static guint    client_validation_timer = 0;
 static guint    client_validation_rounds = 0;
 
-static void client_get_all(ObClient *self, gboolean real);
+static gboolean client_get_all(ObClient *self, gboolean real);
 static void client_get_startup_id(ObClient *self);
 static void client_get_session_ids(ObClient *self);
 static void client_save_app_rule_values(ObClient *self);
-static void client_get_area(ObClient *self);
+static gboolean client_get_area(ObClient *self);
 static void client_get_desktop(ObClient *self);
 static void client_get_state(ObClient *self);
 static void client_get_shaped(ObClient *self);
@@ -277,7 +277,15 @@ void client_manage(Window window, ObPrompt *prompt)
     self->desktop = screen_num_desktops; /* always an invalid value */
 
     /* get all the stuff off the window */
-    client_get_all(self, TRUE);
+    if (!client_get_all(self, TRUE)) {
+        ob_debug("Window 0x%lx disappeared while being managed", window);
+        g_slice_free(ObClient, self);
+        /* window_manage() holds the server grab across client setup.  Keep
+           this failure path paired with the normal release below or a
+           short-lived client can freeze the entire X session. */
+        grab_server(FALSE);
+        return;
+    }
 
     ob_debug("Window type: %d", self->type);
     ob_debug("Window group: 0x%x", self->group?self->group->leader:0);
@@ -587,7 +595,12 @@ ObClient *client_fake_manage(Window window)
     self = g_slice_new0(ObClient);
     self->window = window;
 
-    client_get_all(self, FALSE);
+    if (!client_get_all(self, FALSE)) {
+        ob_debug("Window 0x%lx disappeared while being pretend-managed",
+                 window);
+        g_slice_free(ObClient, self);
+        return NULL;
+    }
     /* per-app settings override stuff, and return the settings for other
        uses too. this returns a shallow copy that needs to be freed */
     settings = client_get_settings_state(self);
@@ -1238,10 +1251,11 @@ gboolean client_find_onscreen(ObClient *self, gint *x, gint *y, gint w, gint h,
     return ox != *x || oy != *y;
 }
 
-static void client_get_all(ObClient *self, gboolean real)
+static gboolean client_get_all(ObClient *self, gboolean real)
 {
     /* this is needed for the frame to set itself up */
-    client_get_area(self);
+    if (!client_get_area(self))
+        return FALSE;
 
     /* these things can change the decor and functions of the window */
 
@@ -1266,7 +1280,7 @@ static void client_get_all(ObClient *self, gboolean real)
     /* now we got everything that can affect the decorations or app rule
        matching */
     if (!real)
-        return;
+        return TRUE;
 
     /* save the values of the variables used for app rule matching */
     client_save_app_rule_values(self);
@@ -1299,6 +1313,8 @@ static void client_get_all(ObClient *self, gboolean real)
     client_update_strut(self);
     client_update_icons(self);
     client_update_icon_geometry(self);
+
+    return TRUE;
 }
 
 static void client_get_startup_id(ObClient *self)
@@ -1309,13 +1325,14 @@ static void client_get_startup_id(ObClient *self)
                                &self->startup_id);
 }
 
-static void client_get_area(ObClient *self)
+static gboolean client_get_area(ObClient *self)
 {
     XWindowAttributes wattrib;
     Status ret;
 
     ret = XGetWindowAttributes(obt_display, self->window, &wattrib);
-    if (!ret || self->window == None) return;
+    if (!ret || self->window == None)
+        return FALSE;
 
     RECT_SET(self->area, wattrib.x, wattrib.y, wattrib.width, wattrib.height);
     POINT_SET(self->root_pos, wattrib.x, wattrib.y);
@@ -1323,6 +1340,8 @@ static void client_get_area(ObClient *self)
 
     ob_debug("client area: %d %d  %d %d  bw %d", wattrib.x, wattrib.y,
              wattrib.width, wattrib.height, wattrib.border_width);
+
+    return TRUE;
 }
 
 static void client_get_desktop(ObClient *self)
